@@ -1,4 +1,4 @@
-module spotview
+module github.com/hjkoskel/spotview
 
 go 1.18
 
