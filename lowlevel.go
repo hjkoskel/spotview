@@ -29,7 +29,10 @@ type EPD0213LowLevel struct {
 	spiConn     spi.Conn   //*spi.Device
 }
 
-func InitEPD0213LowLevel() (EPD0213LowLevel, error) {
+func InitEPD0213LowLevel(spiDeviceFileName string, readyPinName string, resetPinName string, dataModePinName string) (EPD0213LowLevel, error) {
+	if !fileExists(spiDeviceFileName) {
+		return EPD0213LowLevel{}, fmt.Errorf("SPI device file %v is missing", spiDeviceFileName)
+	}
 
 	_, err := host.Init()
 
@@ -37,9 +40,9 @@ func InitEPD0213LowLevel() (EPD0213LowLevel, error) {
 		return EPD0213LowLevel{}, err
 	}
 
-	p, errSpi := spireg.Open("/dev/spidev0.0")
+	p, errSpi := spireg.Open(spiDeviceFileName)
 	if errSpi != nil {
-		return EPD0213LowLevel{}, errSpi
+		return EPD0213LowLevel{}, fmt.Errorf("spi %v error %v", spiDeviceFileName, errSpi.Error())
 	}
 	c, errSpiConnect := p.Connect(physic.MegaHertz, spi.Mode0, 8)
 	if errSpiConnect != nil {
@@ -47,19 +50,11 @@ func InitEPD0213LowLevel() (EPD0213LowLevel, error) {
 
 	}
 
-	/*
-		if p, ok := c.(spi.Pins); ok {
-			fmt.Printf("  CLK : %s", p.CLK())
-			fmt.Printf("  MOSI: %s", p.MOSI())
-			fmt.Printf("  MISO: %s", p.MISO())
-			fmt.Printf("  CS  : %s", p.CS())
-		}*/
-
 	result := EPD0213LowLevel{
 		spiConn:     c,
-		readyPin:    gpioreg.ByName("GPIO24"),
-		resetPin:    gpioreg.ByName("GPIO17"),
-		dataModePin: gpioreg.ByName("GPIO25"),
+		readyPin:    gpioreg.ByName(readyPinName),
+		resetPin:    gpioreg.ByName(resetPinName),
+		dataModePin: gpioreg.ByName(dataModePinName),
 	}
 
 	if result.readyPin == nil {
@@ -94,15 +89,12 @@ func (p *EPD0213LowLevel) Send(command byte, pars ...byte) error { //Command and
 			return dataModePinSetErr
 		}
 		//CS=0
-		//fmt.Printf("\nCOMMAND =%02X PARS=", command)
 		for _, data := range pars {
 			spiErr := p.spiConn.Tx([]byte{data}, onebyteresp)
 			if spiErr != nil {
 				return spiErr
 			}
 		}
-	} else {
-		//fmt.Printf("\nCOMMAND %02X no pars", command)
 	}
 	//CS=1  //SPI controls CS?
 	return nil

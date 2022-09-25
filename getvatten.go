@@ -13,10 +13,6 @@ import (
 	"time"
 )
 
-const (
-	CACHEDIR = "./vattenfallcache"
-)
-
 /**
 https://www.vattenfall.fi/api/price/spot/2022-08-24/2022-08-24?lang=fi
 
@@ -43,14 +39,17 @@ type VattenfallItem struct { //JSON struct. so much redudant data
 
 type VattenfallData []VattenfallItem
 
-func GetVattenfallData(t time.Time) (VattenfallData, error) {
+func GetVattenfallData(t time.Time, cachedir string) (VattenfallData, error) {
 	result := VattenfallData{}
 
-	cachefilename, errName := vattenfallCacheFileName(t)
+	cachefilenameonly, errName := vattenfallCacheFileName(t)
 	if errName != nil {
 		return VattenfallData{}, fmt.Errorf("timerr %v", errName.Error())
 	}
-	fmt.Printf("Cache filename is %s\n", cachefilename)
+
+	cachefilename := path.Join(cachedir, cachefilenameonly)
+
+	fmt.Printf("Getting cached data from file %s\n", cachefilename)
 	if fileExists(cachefilename) { //Good, get that
 		content, readErr := ioutil.ReadFile(cachefilename)
 		if readErr == nil {
@@ -58,17 +57,17 @@ func GetVattenfallData(t time.Time) (VattenfallData, error) {
 			if errUnmarshal == nil {
 				contentErr := result.CheckErr(t)
 				if contentErr == nil {
-					return result, nil
+					return result, nil //Got valid data from cache
 				}
-				fmt.Printf("Content error %v, download fresh", contentErr.Error())
+				fmt.Printf("Content error %v\n", contentErr.Error())
 			} else {
-				fmt.Printf("Unmarshall err from cache %v, download fresh", errUnmarshal.Error())
+				fmt.Printf("Unmarshall err from cache %v\n", errUnmarshal.Error())
 			}
 		} else {
-			fmt.Printf("Read error %v, download fresh", readErr.Error())
+			fmt.Printf("Read error %v\n", readErr.Error())
 		}
 	}
-
+	fmt.Printf("Downloading fresh from vattenfall\n")
 	content, dlErr := downloadVattenfall(t)
 	if dlErr != nil {
 		return result, dlErr
@@ -83,7 +82,10 @@ func GetVattenfallData(t time.Time) (VattenfallData, error) {
 		return result, nil
 	}
 	//Ok, save to cache
-	os.MkdirAll(CACHEDIR, 0777)
+	createErr := os.MkdirAll(cachedir, 0777)
+	if createErr != nil {
+		return result, fmt.Errorf("error creating cache %v fail %v", cachedir, createErr.Error())
+	}
 	errWriteCache := os.WriteFile(cachefilename, content, 0666)
 	if errWriteCache != nil {
 		return result, errWriteCache
@@ -97,8 +99,7 @@ func vattenfallCacheFileName(t time.Time) (string, error) {
 	if ltErr != nil {
 		return "", ltErr
 	}
-	fname := fmt.Sprintf("%v-%02d-%02d.json", lt.Year(), lt.Month(), lt.Day())
-	return path.Join(CACHEDIR, fname), nil
+	return fmt.Sprintf("%v-%02d-%02d.json", lt.Year(), lt.Month(), lt.Day()), nil
 }
 
 func vattenfallUrl(t time.Time) (string, error) {
@@ -130,8 +131,6 @@ func downloadVattenfall(t time.Time) ([]byte, error) {
 	if errGet != nil {
 		return nil, errGet
 	}
-
-	//fmt.Printf("\nresp=%#v\n\n\n", resp)
 
 	defer resp.Body.Close()
 	return ioutil.ReadAll(resp.Body)
@@ -189,9 +188,9 @@ func (p *VattenfallData) GetHourPrices(t time.Time) ([24]float64, error) {
 Main routine for downloading from vattenfall net or cache
 */
 
-func GetPriceViewVattenfall(tNow time.Time) (PriceView, error) {
+func GetPriceViewVattenfall(tNow time.Time, cachedir string) (PriceView, error) {
 	result := PriceView{}
-	dataNow, errDataNow := GetVattenfallData(tNow)
+	dataNow, errDataNow := GetVattenfallData(tNow, cachedir)
 	if errDataNow != nil {
 		return PriceView{}, fmt.Errorf("Todays data fail %v", errDataNow)
 	}
@@ -203,9 +202,8 @@ func GetPriceViewVattenfall(tNow time.Time) (PriceView, error) {
 
 	tTomorrow := tNow.Add(time.Hour * 24)
 
-	dataTomorrow, errDataTomorrow := GetVattenfallData(tTomorrow)
+	dataTomorrow, errDataTomorrow := GetVattenfallData(tTomorrow, cachedir)
 	if errDataTomorrow == nil { //Good, today is first, then tomorrow
-		fmt.Printf("tomorrow data recieved %v\n", dataTomorrow)
 		tomorrowPrices, errTomorrowPrices := dataTomorrow.GetHourPrices(tTomorrow)
 		if errTomorrowPrices == nil {
 			return PriceView{
@@ -219,7 +217,7 @@ func GetPriceViewVattenfall(tNow time.Time) (PriceView, error) {
 	//tomorrow prices are not available yet. use yesterday and today
 	fmt.Printf("tomorrow prices not available yet\n")
 	tYesteday := tNow.Add(-time.Hour * 24)
-	dataYesterday, errDataYesterday := GetVattenfallData(tYesteday)
+	dataYesterday, errDataYesterday := GetVattenfallData(tYesteday, cachedir)
 	if errDataYesterday != nil {
 		return result, errDataYesterday
 	}

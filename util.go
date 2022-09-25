@@ -23,5 +23,5 @@ func TimeInFinland(t time.Time) (time.Time, error) {
 }
 
 func FinnishWeekDayName(t time.Time) string {
-	return map[int]string{1: "Ma", 2: "Ti", 3: "Ke", 4: "To", 5: "Pe", 6: "La", 7: "Su"}[int(t.Weekday())]
+	return map[int]string{0: "Su", 1: "Ma", 2: "Ti", 3: "Ke", 4: "To", 5: "Pe", 6: "La"}[int(t.Weekday())]
 }

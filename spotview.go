@@ -1,9 +1,17 @@
 /*
 Electricity spot price display for raspberry pi + epd0213 display
+This software works by default on read-only filesystem.
+
+check help/options with -h command line flag
+
+One way to deploy this to use raspberry distribution like https://gokrazy.org/
+gokr-packer -overwrite=/dev/sdb github.com/hjkoskel/spotview
+
 */
 package main
 
 import (
+	"flag"
 	"fmt"
 	"image"
 	"image/color"
@@ -12,6 +20,8 @@ import (
 	"os"
 	"sort"
 	"time"
+
+	_ "time/tzdata" //With embedded zoneinfo, no zoneinfo required on operational system
 
 	"github.com/hjkoskel/gomonochromebitmap"
 )
@@ -46,34 +56,14 @@ func maxNvaluesOnThreshold(arr []float64, n int) float64 {
 	sort.Float64s(listed)
 
 	if len(listed) < n {
-		return listed[len(listed)-1]
+		return listed[0]
 	}
 	if n < 1 {
-		return arr[0]
+		return listed[0] - 1 //at least less than most min
 	}
 
 	return listed[len(listed)-n]
 }
-
-/*
-func maxNvalues(arr []float64, n int) []int {
-	list := make([]float64, len(arr))
-	result := make([]int, n)
-
-	for target:=range(result){
-		result[target]
-	}
-
-	for i, v := range arr {
-		if len(result) < n {
-			result = append(result, i)
-		} else {
-			for j := range result {
-			}
-		}
-	}
-	return result
-}*/
 
 const (
 	PRICEINCREMENT     float64 = 50
@@ -82,14 +72,9 @@ const (
 	SMALLTICKPRICESTEP float64 = 10
 	TICKPRICESTEP      float64 = 50
 
-	SMALLTICKLEN int = 2
+	SMALLTICKLEN int = 1
 	TICKLEN      int = 4
 )
-
-/*
-func createBarPlot(values []float64, yConv float64, width int, height int) gomonochromebitmap.MonoBitmap {
-
-}*/
 
 type PriceView struct {
 	FirstName string
@@ -100,14 +85,13 @@ type PriceView struct {
 }
 
 //Cents per kWh
-func (p *PriceView) CreateBlackRedView() (gomonochromebitmap.MonoBitmap, gomonochromebitmap.MonoBitmap, error) {
+func (p *PriceView) CreateBlackRedView(expensiveHourCount int) (gomonochromebitmap.MonoBitmap, gomonochromebitmap.MonoBitmap, error) {
 	redPic := gomonochromebitmap.NewMonoBitmap(DISP_WIDTH, DISP_HEIGHT, false)
 	blackPic := gomonochromebitmap.NewMonoBitmap(DISP_WIDTH, DISP_HEIGHT, false)
 
 	//X scale
 	barWidth := DISP_WIDTH / 48
 	barMargin := (DISP_WIDTH % 48) / 2
-	fmt.Printf("BarWidth %v, margin %v\n", barWidth, barMargin)
 	//Y scale
 	_, max1 := maxArr(p.FirstData[:])
 	_, max2 := maxArr(p.LastData[:])
@@ -119,8 +103,6 @@ func (p *PriceView) CreateBlackRedView() (gomonochromebitmap.MonoBitmap, gomonoc
 	//Title+plot+Xaxis text
 	plotHeight := DISP_HEIGHT - TITLE_HEIGHT - XAXIS_HEIGHT
 	yConv := float64(plotHeight) / float64(plotMax)
-
-	fmt.Printf("plot max %.2f, yConv=%f\n", plotMax, yConv)
 
 	tickFont := gomonochromebitmap.GetFont_4x5()
 	for n := 0; n < 48; n += 4 {
@@ -142,13 +124,9 @@ func (p *PriceView) CreateBlackRedView() (gomonochromebitmap.MonoBitmap, gomonoc
 		DISP_WIDTH/2+DISP_WIDTH/4-titleFontWidth*len(lastDayText)/2, 0, DISP_WIDTH, DISP_HEIGHT), true, false, false, false)
 
 	//First day
-	firstExpensive := maxNvaluesOnThreshold(p.FirstData[:], 6)
-	lastExpensive := maxNvaluesOnThreshold(p.LastData[:], 6)
-
+	firstExpensive := maxNvaluesOnThreshold(p.FirstData[:], expensiveHourCount)
 	for h, price := range p.FirstData {
-		//bar := image.Rect(barMargin+h*barWidth, int(yConv*(plotMax-price)), barMargin+(h+1)*barWidth, DISP_HEIGHT-5)
 		barHeight := int(price * yConv)
-
 		bar := image.Rect(
 			barMargin+h*barWidth,
 			TITLE_HEIGHT+plotHeight-barHeight,
@@ -161,6 +139,7 @@ func (p *PriceView) CreateBlackRedView() (gomonochromebitmap.MonoBitmap, gomonoc
 		}
 	}
 
+	lastExpensive := maxNvaluesOnThreshold(p.LastData[:], expensiveHourCount)
 	for h, price := range p.LastData { //BAD copy paste. TODO refactor
 		barHeight := int(price * yConv)
 
@@ -179,10 +158,15 @@ func (p *PriceView) CreateBlackRedView() (gomonochromebitmap.MonoBitmap, gomonoc
 		}
 	}
 
-	//Yscale
+	//Yscale, small ticks
 	for v := float64(0); v < plotMax; v += SMALLTICKPRICESTEP {
-		blackPic.Hline(0, SMALLTICKLEN, DISP_HEIGHT-XAXIS_HEIGHT-int(v*yConv), true)
+		tickpos := DISP_HEIGHT - XAXIS_HEIGHT - int(v*yConv)
+		blackPic.Hline(0, SMALLTICKLEN, tickpos, true)
+		if 0 < v {
+			blackPic.Print(fmt.Sprintf("%.0f", v), tickFont, 0, 0, image.Rect(2, tickpos-2, DISP_WIDTH, DISP_HEIGHT), true, false, false, false)
+		}
 	}
+	//Yscale, large ticks
 	for v := float64(0); v < plotMax; v += TICKPRICESTEP {
 		blackPic.Hline(0, TICKLEN, DISP_HEIGHT-XAXIS_HEIGHT-int(v*yConv), true)
 	}
@@ -190,90 +174,120 @@ func (p *PriceView) CreateBlackRedView() (gomonochromebitmap.MonoBitmap, gomonoc
 	return blackPic, redPic, nil
 }
 
-func main() {
-
-	//Example data
-
-	pw := PriceView{
-		FirstName: "Ma",
-		FirstData: [24]float64{30.14, 22.97, 22.98, 24.04, 26.33, 29.26, 44.77, 57.32, 63.10, 64.76, 59.67, 53.82, 48.40, 47.36, 42.90, 36.62, 47.36, 48.87, 60.68, 68.48, 68.48, 55.20, 51.14, 33.57},
-
-		LastName: "Ti",
-		LastData: [24]float64{18.64, 7.20, 7.67, 7.69, 7.56, 9.55, 21.36, 49.54, 65.39, 68.28, 58.20, 49.37, 38.05, 31.93, 33.41, 34.38, 35.75, 36.37, 35.89, 34.58, 34.86, 34.80, 37.02, 30.05},
+func createPngOutput(filename string, blackPic *gomonochromebitmap.MonoBitmap, redPic *gomonochromebitmap.MonoBitmap) error {
+	if len(filename) == 0 {
+		return nil
 	}
-
-	pw, errGet := GetPriceViewVattenfall(time.Now())
-	if errGet != nil {
-		fmt.Printf("Error getting data %v", errGet.Error())
-		os.Exit(-1)
-	}
-
-	testBlack, testRed, genErr := pw.CreateBlackRedView()
-	if genErr != nil {
-		fmt.Printf("Gen err %v", genErr.Error())
-	}
-
-	//Debug output
-	planar, errPlanar := gomonochromebitmap.CreatePlanarColorImage([]gomonochromebitmap.MonoBitmap{testBlack, testRed}, []color.Color{
+	planar, errPlanar := gomonochromebitmap.CreatePlanarColorImage([]gomonochromebitmap.MonoBitmap{*blackPic, *redPic}, []color.Color{
 		color.White, color.Black, color.RGBA{R: 255, A: 255}, color.RGBA{R: 255, A: 255}})
 	if errPlanar != nil {
-		fmt.Printf("Planar err%v", errPlanar.Error())
-		return
+		return fmt.Errorf("planar color image err%v", errPlanar.Error())
 	}
 
-	out, errCreateOut := os.Create("out.png")
+	out, errCreateOut := os.Create(filename)
 	if errCreateOut != nil {
-		fmt.Printf("\n\nerr %v\n", errCreateOut.Error())
-		return
+		return fmt.Errorf("err creating %v debugfile %v", filename, errCreateOut.Error())
 	}
 	errEncode := png.Encode(out, planar)
 	if errEncode != nil {
-		fmt.Printf("\n\nError encode %v\n", errEncode.Error())
-		return
+		return fmt.Errorf("error png-encode debugfile %v err=%v", filename, errEncode.Error())
 	}
 	closeErr := out.Close()
 	if closeErr != nil {
-		fmt.Printf("Closing error %v\n", closeErr.Error())
-		return
+		return fmt.Errorf("closing %v error %v", filename, closeErr.Error())
 	}
+	return nil
+}
 
-	fmt.Printf("\n\n----Testing with real hardware (fail on not pi) ----\n")
-
-	lowLevel, errLowLevel := InitEPD0213LowLevel()
-
-	if errLowLevel != nil {
-		fmt.Printf("Low level init error %v", errLowLevel.Error())
-		return
-	}
+func UpdateAndShutdownEpaper(lowLevel EPD0213LowLevel, blackPic *gomonochromebitmap.MonoBitmap, redPic *gomonochromebitmap.MonoBitmap) error {
 	paper, paperCreateErr := CreateEPD0213(&lowLevel)
 	if paperCreateErr != nil {
-		fmt.Printf("Error creating %v", paperCreateErr.Error())
-		return
+		return fmt.Errorf("error creating %v", paperCreateErr.Error())
 	}
-	fmt.Printf("Initializing...\n")
+
 	initErr := paper.Init()
 	if initErr != nil {
-		fmt.Printf("Init failed %v", initErr.Error())
-		return
+		return fmt.Errorf("init failed %v", initErr.Error())
 	}
 
 	defer paper.DeepSleep() //Safety if fail
 
-	blackData, convBlackErr := paper.ToRamFormat(testBlack)
+	blackData, convBlackErr := paper.ToRamFormat(*blackPic)
 	if convBlackErr != nil {
-		fmt.Printf("Error converting black %v", convBlackErr.Error())
-		return
+		return fmt.Errorf("error converting black %v", convBlackErr.Error())
 	}
-	redData, convRedErr := paper.ToRamFormat(testRed)
+	redData, convRedErr := paper.ToRamFormat(*redPic)
 	if convRedErr != nil {
-		fmt.Printf("Error converting red %v", convRedErr.Error())
-		return
-	}
-	fmt.Printf("Drawing...\n")
-	drawErr := paper.Draw(blackData, redData)
-	if drawErr != nil {
-		fmt.Printf("Drawing failed %v", drawErr.Error())
-		return
+		return fmt.Errorf("Error converting red %v", convRedErr.Error())
 	}
 
+	drawErr := paper.Draw(blackData, redData)
+	if drawErr != nil {
+		return fmt.Errorf("Drawing failed %v", drawErr.Error())
+	}
+	return nil
+}
+
+const (
+	VALIDEPOCHLIMIT = 1663890653963
+)
+
+func waitClock() {
+	for time.Now().UnixMilli() < VALIDEPOCHLIMIT { //Arbiratry time... not less
+		fmt.Printf("waiting wall clock sync")
+		time.Sleep(time.Second * 5)
+	}
+}
+
+func main() {
+	pOutputFileName := flag.String("o", "/tmp/spotview.png", "outputfilename (in .png) what spotview renders on screen")
+	pNohw := flag.Bool("nohw", false, "e-paper is not available")
+	pCacheDirName := flag.String("cache", "/tmp/vattenfallcache", "download cache dirname for downloaded price data. (prefer non-volatile location if possible)")
+
+	pSpiName := flag.String("spi", "/dev/spidev0.0", "spi device file name")
+	pReadyPinName := flag.String("pinbusy", "GPIO24", "busy pin name (pin8 BUSY on display)")
+	pResetPin := flag.String("pinreset", "GPIO17", "reset pin name (pin7 RESET on display)")
+	pDataModePinName := flag.String("pindc", "GPIO25", " data mode pin name (pin6 D/C on display)")
+
+	pNumberOfExpensiveHours := flag.Int("e", 6, "number of expensive hours per 24h highlighted in red")
+
+	flag.Parse()
+
+	//Waiting clock. Needed in case of appliance
+	waitClock()
+
+	pw, errGet := GetPriceViewVattenfall(time.Now(), *pCacheDirName)
+	if errGet != nil {
+		fmt.Printf("Error getting data %v\n", errGet.Error())
+		os.Exit(-1)
+	}
+
+	testBlack, testRed, genErr := pw.CreateBlackRedView(*pNumberOfExpensiveHours)
+	if genErr != nil {
+		fmt.Printf("Error generating view %v\n", genErr.Error())
+		os.Exit(-1)
+	}
+
+	//Debug output
+	errPng := createPngOutput(*pOutputFileName, &testBlack, &testRed)
+	if errPng != nil {
+		fmt.Printf("%v\n", errPng.Error())
+		os.Exit(-1)
+	}
+	fmt.Printf("wrote output %v\n", *pOutputFileName)
+
+	if !*pNohw {
+		lowLevel, errLowLevel := InitEPD0213LowLevel(*pSpiName, *pReadyPinName, *pResetPin, *pDataModePinName)
+
+		if errLowLevel != nil {
+			fmt.Printf("low level init error %v\n", errLowLevel.Error())
+			os.Exit(-1)
+		}
+
+		errUpdate := UpdateAndShutdownEpaper(lowLevel, &testBlack, &testRed)
+		if errUpdate != nil {
+			fmt.Printf("Hardware error %v\n", errUpdate.Error())
+			os.Exit(-1)
+		}
+	}
 }
