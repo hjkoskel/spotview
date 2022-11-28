@@ -6,7 +6,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"path"
@@ -51,7 +51,7 @@ func GetVattenfallData(t time.Time, cachedir string) (VattenfallData, error) {
 
 	fmt.Printf("Getting cached data from file %s\n", cachefilename)
 	if fileExists(cachefilename) { //Good, get that
-		content, readErr := ioutil.ReadFile(cachefilename)
+		content, readErr := os.ReadFile(cachefilename)
 		if readErr == nil {
 			errUnmarshal := json.Unmarshal(content, &result)
 			if errUnmarshal == nil {
@@ -74,7 +74,7 @@ func GetVattenfallData(t time.Time, cachedir string) (VattenfallData, error) {
 	}
 	errUnmarshal := json.Unmarshal(content, &result)
 	if errUnmarshal != nil {
-		return result, errUnmarshal
+		return result, fmt.Errorf("unmarshal err =%s,  content=%s", errUnmarshal, &content)
 	}
 
 	err := result.CheckErr(t)
@@ -107,33 +107,34 @@ func vattenfallUrl(t time.Time) (string, error) {
 	if ltErr != nil {
 		return "", ltErr
 	}
-	return fmt.Sprintf("http://www.vattenfall.fi/api/price/spot/%v-%02d-%02d/%v-%02d-%02d?lang=fi",
+	return fmt.Sprintf("https://www.vattenfall.fi/api/price/spot/%v-%02d-%02d/%v-%02d-%02d?lang=fi",
 		lt.Year(), lt.Month(), lt.Day(),
 		lt.Year(), lt.Month(), lt.Day(),
 	), nil
 }
 
 func downloadVattenfall(t time.Time) ([]byte, error) {
-	client := http.Client{
-		CheckRedirect: func(r *http.Request, via []*http.Request) error {
-			r.URL.Opaque = r.URL.Path
-			return nil
-		},
-	}
-	// Put content on file
 	url, urlErr := vattenfallUrl(t)
 	if urlErr != nil {
 		return nil, urlErr
 	}
-
 	fmt.Printf("DL url is %s\n", url)
-	resp, errGet := client.Get(url)
-	if errGet != nil {
-		return nil, errGet
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("http GET %v err %v", url, err)
 	}
 
-	defer resp.Body.Close()
-	return ioutil.ReadAll(resp.Body)
+	req.Header.Set("User-Agent", "Wget/1.21.2") //Needed for some reason
+
+	response, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error doing GET request %#v,  err=%v", req, err)
+	}
+
+	defer response.Body.Close()
+	return io.ReadAll(response.Body)
 }
 
 //Check error, so it matches
